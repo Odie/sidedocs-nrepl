@@ -7,9 +7,68 @@
             [clojure.tools.nrepl.middleware :as nrepl.middleware]
 
             [cider.nrepl.middleware.info]
-            [cider.nrepl.middleware.util.error-handling]))
+            [cider.nrepl.middleware.util.error-handling]
+            [clojure.java.io :as io]))
 
 
+;;------------------------------------------------------------------------------
+;; Locating side-loaded docstrings
+;;------------------------------------------------------------------------------
+
+(defn- get-working-dir
+  []
+  (System/getProperty "user.dir"))
+
+
+(defn- expand-home [s]
+  (if (.startsWith s "~")
+    (clojure.string/replace-first s "~" (System/getProperty "user.home"))
+    s))
+
+
+(defn- doc-repos
+  "Returns a sequence of all repos sidedocs knows about as 'files'.
+
+  Each repo is expected to live in ~/.sidedocs.
+  The user can have as many repos from as many sources as they'd like."
+  []
+
+  (let [sidedocs-dir (expand-home "~/.sidedocs")]
+    (->> sidedocs-dir
+         (io/file)
+         (.list)
+         (seq)
+         (map #(io/file sidedocs-dir %)))))
+
+
+(defn find-docstring
+  "Locate appropriate side-loaded docstring for the namespace and the var.
+
+  Returns: docstring or nil"
+  [repo-location ns-name# var-name]
+
+  (let [expected-file-location (io/file repo-location ns-name# (str var-name ".md"))]
+    (if (.exists expected-file-location)
+      (slurp expected-file-location)
+      nil)))
+
+
+(defn find-docstring-in-repos
+  "Locates docstring for the given namespace and var in a list of docstring repos.
+
+  The function will search through the given repos in the order and return the first
+  result it finds.
+
+  It is expected for the function to be used in conjunction with #'doc-repos to search
+  through all configured documentation repos on disk."
+  [repo-seq ns-name# var-name]
+
+  (some #(find-docstring % ns-name# var-name) repo-seq))
+
+
+;;------------------------------------------------------------------------------
+;; nrepl middleware function
+;;------------------------------------------------------------------------------
 (defn- run-cider-nrepl-op
   "Runs the given cider-nrepl op function.
 
@@ -35,21 +94,34 @@
       ;; So to have cider.nrepl deal with the var info request, we have to call into
       ;; the cider nrepl innards directly.
       (let [info-result (merge (run-cider-nrepl-op cider.nrepl.middleware.info/info-reply msg)
-                               {:middleware :sidedocs})]
-        ;; TODO Implement docstring replacement
+                               {:middleware :sidedocs})
 
-        ;; If cider.nrepl was able to lookup the documentation successfully...
-        ;; Check if we have a new docstring for the var
-        ;; If so, replace the original docstring
+            ns-name# (:ns msg)
+            var-name# (:symbol msg)
+
+            ;; Try to retrieve sided loaded docs given the ns and var names
+            replacement-doc (find-docstring-in-repos (doc-repos) ns-name# var-name#)
+
+            ;; Override the default docstring if the replacement docs can be found
+            info-result (cond-> info-result
+                          replacement-doc (merge {"doc" replacement-doc}))
+            ]
+
         ;; Send the reply
-        (nrepl.transport/send transport (response-for msg info-result))
-        ))))
+        (nrepl.transport/send transport (response-for msg info-result)))
+
+      ;; All other messages should pass through without processing
+      ;; (handler msg)
+      )))
 
 (nrepl.middleware/set-descriptor! #'wrap-sidedocs
   ;; Install the middleware ahead of the "info" handler
   {:expects #{"info"}})
 
 
+;;------------------------------------------------------------------------------
+;; Test utilities
+;;------------------------------------------------------------------------------
 (defn- start-server
   "Starts an nrepl server locally with given middlewares"
   [& middlewares]
