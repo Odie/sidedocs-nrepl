@@ -1,4 +1,4 @@
-(ns sidecar-nrepl.middleware
+(ns sidedocs-nrepl.middleware
   (:require [clojure.tools.nrepl :as nrepl]
             [clojure.tools.nrepl.misc :refer [response-for]]
 

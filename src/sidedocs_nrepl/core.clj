@@ -1,4 +1,4 @@
-(ns sidecar-nrepl.core
+(ns sidedocs-nrepl.core
   (:gen-class))
 
 (defn -main
