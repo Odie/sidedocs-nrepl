@@ -8,7 +8,88 @@
 
             [cider.nrepl.middleware.info]
             [cider.nrepl.middleware.util.error-handling]
-            [clojure.java.io :as io]))
+            [cider.nrepl.middleware.util.meta]
+
+            [clojure.java.io :as io]
+            [clojure.string :as str]))
+
+
+
+;;------------------------------------------------------------------------------
+;; Functions *borrowed* from cider
+;; These functions seem to have moved between versions 0.14 and 0.15
+;;------------------------------------------------------------------------------
+
+(defn- resolve-special
+  "Return info for the symbol if it's a special form, or nil otherwise. Adds
+  `:url` unless that value is explicitly set to `nil` -- the same behavior
+  used by `clojure.repl/doc`."
+  [sym]
+  (try
+    (let [sym (get '{& fn, catch try, finally try} sym sym)
+          v   (meta (ns-resolve (find-ns 'clojure.core) sym))]
+      (when-let [m (cond (special-symbol? sym) (#'clojure.repl/special-doc sym)
+                         (:special-form v) v)]
+        (assoc m
+               :url (if (contains? m :url)
+                      (when (:url m)
+                        (str "https://clojure.org/" (:url m)))
+                      (str "https://clojure.org/special_forms#" (:name m))))))
+    (catch NoClassDefFoundError _)
+    (catch Exception _)))
+
+
+(defn- resolve-var
+  "Returns "
+  [ns sym]
+  (if-let [ns (find-ns ns)]
+    (try (ns-resolve ns sym)
+         ;; Impl might try to resolve it as a class, which may fail
+         (catch ClassNotFoundException _
+           nil)
+         ;; TODO: Preserve and display the exception info
+         (catch Exception _
+           nil))))
+
+
+(defn- resolve-aliases
+  [ns]
+  (if-let [ns (find-ns ns)]
+    (ns-aliases ns)))
+
+
+(defn- resolve-sym-in-ns
+  "Find the Var given the namespace symbol and sym.
+
+  Returns: Var or nil"
+  [ns-sym sym]
+  (or
+   (resolve-special sym)
+
+   ;; it's a var
+   (resolve-var ns-sym sym)
+
+   ;; sym is an alias for another ns
+   (get (resolve-aliases ns-sym) sym)
+
+   ;; it's simply a full ns
+   (find-ns sym)))
+
+(defn- var-split
+  "Given a Var, return the namespace and the symbol names"
+  [var#]
+
+  (-> (str var#)
+      (subs 2)  ;; remove the "#'" characters
+      (str/split #"/")))
+
+
+(defn resolve-symbol-by-name
+  "Given a symbol in a namespace, find the Var it refers to."
+  [ns-name# sym-name]
+
+  (resolve-sym-in-ns (symbol ns-name#) (symbol sym-name)))
+
 
 
 ;;------------------------------------------------------------------------------
@@ -66,9 +147,11 @@
   (some #(find-docstring % ns-name# var-name) repo-seq))
 
 
+
 ;;------------------------------------------------------------------------------
 ;; nrepl middleware function
 ;;------------------------------------------------------------------------------
+
 (defn- run-cider-nrepl-op
   "Runs the given cider-nrepl op function.
 
@@ -87,41 +170,45 @@
 
 (defn wrap-sidedocs
   [handler]
-  (fn [{:keys [op transport] :as msg}]
-    (if (= "info" op)
-      ;; Unfortunately, nrepl middlewares don't seem to return a response map that we can
-      ;; directly manipulate.
-      ;; So to have cider.nrepl deal with the var info request, we have to call into
-      ;; the cider nrepl innards directly.
-      (let [info-result (merge (run-cider-nrepl-op cider.nrepl.middleware.info/info-reply msg)
-                               {:middleware :sidedocs})
+  (let [msg-count (atom 1)]
+    (fn [{:keys [op transport] :as msg}]
 
-            ns-name# (:ns msg)
-            var-name# (:symbol msg)
+      (if (= "info" op)
+        ;; Unfortunately, nrepl middlewares don't seem to return a response map that we can
+        ;; directly manipulate.
+        ;; So to have cider.nrepl deal with the var info request, we have to call into
+        ;; the cider nrepl innards directly.
+        (let [info-result (merge (run-cider-nrepl-op cider.nrepl.middleware.info/info-reply msg)
+                                 {:middleware :sidedocs})
 
-            ;; Try to retrieve sided loaded docs given the ns and var names
-            replacement-doc (find-docstring-in-repos (doc-repos) ns-name# var-name#)
+              [ns-name# var-name#] (var-split (resolve-symbol-by-name (:ns msg) (:symbol msg)))
 
-            ;; Override the default docstring if the replacement docs can be found
-            info-result (cond-> info-result
-                          replacement-doc (merge {"doc" replacement-doc}))
-            ]
+              ;; Try to retrieve sided loaded docs given the ns and var names
+              replacement-doc (find-docstring-in-repos (doc-repos) ns-name# var-name#)
 
-        ;; Send the reply
-        (nrepl.transport/send transport (response-for msg info-result)))
+              ;; Override the default docstring if the replacement docs can be found
+              info-result (cond-> info-result
+                            replacement-doc (merge {"doc" replacement-doc}))
+              ]
 
-      ;; All other messages should pass through without processing
-      ;; (handler msg)
-      )))
+          ;; Send the reply
+          (nrepl.transport/send transport (response-for msg info-result))
+          )
+
+        ;; All other messages should pass through without processing
+        (handler msg)
+        ))))
 
 (nrepl.middleware/set-descriptor! #'wrap-sidedocs
   ;; Install the middleware ahead of the "info" handler
   {:expects #{"info"}})
 
 
+
 ;;------------------------------------------------------------------------------
-;; Test utilities
+;; Manual testing utilities
 ;;------------------------------------------------------------------------------
+
 (defn- start-server
   "Starts an nrepl server locally with given middlewares"
   [& middlewares]
@@ -135,7 +222,9 @@
   (with-open [conn (nrepl/connect :port port)]
               (-> (nrepl/client conn 1000)
                   (nrepl/message msg)
-                  nrepl/combine-responses)))
+                  nrepl/combine-responses
+                  clojure.pprint/pprint
+                  )))
 
 
 (defn- send-nrepl-message-to-server
@@ -146,16 +235,20 @@
 
 (comment
   (with-open [server (start-server)]
-    (send-nrepl-message-to-server server {:op "describe"})
-    )
+    (send-nrepl-message-to-server server {:op "describe"}))
 
   (with-open [server (start-server)]
     (send-nrepl-message-to-server server {:op "eval" :code "(+ 2 3)"}))
+
+
+  (with-open [server (apply start-server (map resolve middleware-list))]
+    (time
+     (send-nrepl-message-to-server server {:op "info" :symbol "str" :ns "clojure.core"})))
 
   (with-open [server (start-server #'cider.nrepl.middleware.info/wrap-info
                                    #'wrap-sidedocs
                       )]
     (time
-     (send-nrepl-message-to-server server {:op "info" :symbol "str" :ns "clojure.core"})))
+     (send-nrepl-message-to-server server {:op "info" :ns (str *ns*) :symbol "str" })))
 
   )
