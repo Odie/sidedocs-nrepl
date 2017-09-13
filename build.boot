@@ -4,7 +4,8 @@
 (set-env! :resource-paths #{"resources" "src"}
           :source-paths   #{"test"}
           :dependencies   '[[org.clojure/clojure "RELEASE"]
-                            [adzerk/boot-test "RELEASE" :scope "test"]])
+                            [adzerk/boot-test "RELEASE" :scope "test"]
+                            [org.clojure/tools.nrepl "0.2.12"]])
 
 (task-options!
  aot {:namespace   #{'sidecar-nrepl.core}}
