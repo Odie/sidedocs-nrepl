@@ -1,6 +1,6 @@
-(ns sidecar-nrepl.core-test
+(ns sidedocs-nrepl.core-test
   (:require [clojure.test :refer :all]
-            [sidecar-nrepl.core :refer :all]))
+            [sidedocs-nrepl.core :refer :all]))
 
 (deftest a-test
   (testing "FIXME, I fail."

@@ -1,4 +1,4 @@
-# sidecar-nrepl
+# sidedocs-nrepl
 
 FIXME: description
 
@@ -24,7 +24,7 @@ Build an uberjar from the project:
 
 Run the uberjar:
 
-    $ java -jar target/sidecar-nrepl-0.1.0-SNAPSHOT-standalone.jar [args]
+    $ java -jar target/sidedocs-nrepl-0.1.0-SNAPSHOT-standalone.jar [args]
 
 ## Options
 
