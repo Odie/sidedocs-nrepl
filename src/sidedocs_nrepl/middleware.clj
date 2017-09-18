@@ -128,7 +128,7 @@
   Returns: docstring or nil"
   [repo-location ns-name# var-name]
 
-  (let [expected-file-location (io/file repo-location ns-name# (str var-name ".md"))]
+  (let [expected-file-location (io/file repo-location ns-name# (str var-name ".adoc"))]
     (if (.exists expected-file-location)
       (slurp expected-file-location)
       nil)))
