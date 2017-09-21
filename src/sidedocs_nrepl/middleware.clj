@@ -75,13 +75,22 @@
    ;; it's simply a full ns
    (find-ns sym)))
 
-(defn- var-split
-  "Given a Var, return the namespace and the symbol names"
+(defn- var-split-name
+  "Given a Var or string name of a Var, return the namespace and the symbol names
+
+  == Parameters
+  `var#`: Var, string or symbol of fully qualified var name
+
+  == Returns
+  vector of [namespace(string) var-name(string)]"
   [var#]
 
-  (-> (str var#)
-      (subs 2)  ;; remove the "#'" characters
-      (str/split #"/")))
+  (let [var-name (str var#)
+        var-name (if (str/starts-with? var-name "#'")
+                   (subs var-name 2)
+                   var-name)]
+    (when-let [split-location (str/index-of var-name "/")]
+      [(subs var-name 0 split-location) (subs var-name (inc split-location))])))
 
 
 (defn resolve-symbol-by-name
@@ -122,16 +131,58 @@
          (map #(io/file sidedocs-dir %)))))
 
 
+;; Taken from https://stackoverflow.com/questions/10062967/clojures-equivalent-to-pythons-encodehex-and-decodehex
+(defn- hexify
+  "Convert byte sequence to hex string"
+  [coll]
+  (let [hex [\0 \1 \2 \3 \4 \5 \6 \7 \8 \9 \A \B \C \D \E \F]]
+    (letfn [(hexify-byte [b]
+              (let [v (bit-and b 0xFF)]
+                [(hex (bit-shift-right v 4)) (hex (bit-and v 0x0F))]))]
+      (apply str (mapcat hexify-byte coll)))))
+
+
+(defn- hexify-str [s]
+  (hexify (.getBytes s)))
+
+
+(defmacro swallow-exceptions [& body]
+  `(try ~@body (catch Exception e#)))
+
+
+(defn docfile-expected-locations
+  [repo-location ns-name# var-name]
+
+  (->>[;; A documentation file should usually be found at the path "repo/ns-name#/var-name.adoc"
+       ;; It's possible that the var-name to contain illegal characters for the filesystem.
+       ;; In the case of the "/" function, the docfile should be named "/.adoc".
+       ;; That's definitely a bad idea.
+       ;;
+       ;; In fact, an exception will be thrown if we even try to construct such a path using io/file.
+       (swallow-exceptions
+        (io/file repo-location ns-name# (str var-name ".adoc")))
+
+       ;; Also provide an alternate file path where the var-name is hex encoded.
+       ;; This, unfortunately, makes the filename unreadable, making it *slightly* harder when working
+       ;; with these files via an editor.
+       (io/file repo-location ns-name# (str "%" (hexify-str var-name) ".adoc"))]
+      (remove nil?)))
+
+
 (defn find-docstring
   "Locate appropriate side-loaded docstring for the namespace and the var.
 
   Returns: docstring or nil"
   [repo-location ns-name# var-name]
 
-  (let [expected-file-location (io/file repo-location ns-name# (str var-name ".adoc"))]
-    (if (.exists expected-file-location)
-      (slurp expected-file-location)
-      nil)))
+  ;; Where might we find the docfile?
+  (let [expected-locations (docfile-expected-locations repo-location ns-name# var-name)]
+
+    ;; Grab the first path that exists
+    (when-let [location (some #(when (.exists %) %) expected-locations)]
+
+      ;; Read and return the file contents
+      (slurp location))))
 
 
 (defn find-docstring-in-repos
@@ -181,7 +232,7 @@
         (let [info-result (merge (run-cider-nrepl-op cider.nrepl.middleware.info/info-reply msg)
                                  {:middleware :sidedocs})
 
-              [ns-name# var-name#] (var-split (resolve-symbol-by-name (:ns msg) (:symbol msg)))
+              [ns-name# var-name#] (var-split-name (resolve-symbol-by-name (:ns msg) (:symbol msg)))
 
               ;; Try to retrieve sided loaded docs given the ns and var names
               replacement-doc (find-docstring-in-repos (doc-repos) ns-name# var-name#)
@@ -249,6 +300,6 @@
                                    #'wrap-sidedocs
                       )]
     (time
-     (send-nrepl-message-to-server server {:op "info" :ns (str *ns*) :symbol "str" })))
+     (send-nrepl-message-to-server server {:op "info" :ns (str *ns*) :symbol "/" })))
 
   )
